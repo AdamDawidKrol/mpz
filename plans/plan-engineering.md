@@ -54,38 +54,36 @@ Each benchmark should be compiled to Wasm (via Rust `wasm32-unknown-unknown` or
 `wasm32-wasi`) with and without optimization flags to understand compiler output
 variation.
 
-### 0B: Static Analysis Tooling
+### 0B: Wasm Analysis Tooling
 
-Build a Wasm analysis tool that, given a `.wasm` binary, produces the following
-metrics.
+Build two analysis tools: a **static analyzer** operating on `.wasm` binaries
+and a **dynamic profiler** instrumenting execution with representative inputs.
 
-**Instruction-level metrics:**
+**Static analysis** (from the `.wasm` binary alone, using a Wasm parser):
+
 - Opcode frequency histogram (how often each Wasm opcode appears)
 - Opcode bigram/trigram frequencies (common sequences)
 - Instruction mix ratios: arithmetic vs bitwise vs memory vs control flow
-
-**Memory access patterns:**
-- Load/store frequency and alignment distribution
-- Address range and stride analysis (sequential vs random)
-- Unaligned access frequency
-- Sub-word (i8/i16) access frequency vs word-level (i32/i64)
-
-**Control flow metrics:**
 - Basic block size distribution (instructions per block)
-- Branch density (branches per N instructions)
 - `br_table` fanout distribution
-- Call depth histogram and `call_indirect` frequency
-- Loop iteration bound analysis (where bounds are statically determinable)
-
-**Register / local variable metrics:**
 - Locals count per function distribution
 - Globals count per module
-- Live range analysis (how many locals are simultaneously live)
 - Operand stack depth distribution (before compilation to registers)
 
-**Domain crossing indicators:**
-- Sequences where an arithmetic result feeds a bitwise op (and vice versa)
-- Estimated A2B/B2A conversion count per instruction window
+**Dynamic profiling** (requires an instrumented Wasm interpreter exercised on
+representative inputs for each benchmark):
+
+- Actual branch frequencies and taken/not-taken ratios
+- Call depth histogram and `call_indirect` frequency at runtime
+- Loop iteration counts
+- Memory access patterns: load/store frequency, alignment distribution,
+  address range, stride analysis, sequential vs random
+- Sub-word (i8/i16) access frequency vs word-level (i32/i64)
+- Unaligned access frequency
+- Domain crossing sequences: where an arithmetic result feeds a bitwise op
+  (and vice versa), counted per execution window
+- Live range analysis (how many locals are simultaneously live, requires
+  execution trace)
 
 ### 0C: Compilation Transform Analysis
 
@@ -103,6 +101,41 @@ Investigate what Wasm-level or IR-level transformations can improve provability:
 - **Dead code elimination in symbolic branches**: if both branches must be
   padded, how much dead code exists?
 
+### 0D: End-to-End Cost Model
+
+Define a cost model function that estimates total proving cost for a complete
+program given its instruction profile and the per-instruction costs from the
+protocol literature. This is the primary tool for Phase 3A decision
+re-validation: each design alternative is evaluated by re-running the model
+with different per-component cost assumptions and comparing the totals.
+
+**Cost function structure:**
+
+```
+total_cost(program) =
+    sum_over_instructions(per_instruction_cost(opcode))
+  + dispatch_overhead(num_steps, num_branches)
+  + ram_overhead(num_accesses, setup_teardown)
+  + conversion_overhead(num_domain_crossings)
+  + preprocessing(total_vole_correlations)
+```
+
+**Inputs:**
+- Per-instruction cost estimates derived from the paper summaries (gates,
+  VOLE correlations, RAM accesses, domain conversions, time at reference
+  bandwidth)
+- Instruction profiles from Phase 0B (opcode frequencies, memory access
+  counts, domain crossing counts)
+- Dispatch overhead model from Batchman/LogRobin++ cost formulas
+
+**Outputs:**
+- Per-benchmark proving time estimates at reference bandwidths (100 Mbps,
+  1 Gbps)
+- Cost breakdown per category (compute, memory, conversion, dispatch) for
+  each benchmark, identifying the dominant bottleneck
+- Concrete headline numbers, e.g.: "AES-128-CTR encrypting 16 bytes: ~N ms
+  at 1 Gbps", "SHA-256 hashing 1KB: ~N ms at 1 Gbps"
+
 ---
 
 ## Phase 3: Protocol Selection (`decisions.md`)
@@ -114,7 +147,7 @@ from `docs/zk-vm/questions.md`. The key ones to stress-test:
 
 | Decision | Risk | What empirical data resolves it |
 |----------|------|-------------------------------|
-| Binary field preference (Q2.1) | Domain crossing cost may dominate | Phase 0B domain-crossing frequency across benchmarks |
+| Binary field preference (Q2.1) | Domain crossing cost may dominate | See 3A.1 below |
 | i32-word RAM granularity (Q5.1) | Sub-word access frequency may be higher than assumed | Phase 0B sub-word access stats |
 | QuickSilver over JesseQ (Q3.1) | JesseQ is 3x faster; is battle-tested-ness worth the gap? | Sensitivity analysis: does 3x gate throughput change any system-level conclusion? |
 | Batchman + LogRobin++ (Q4.3) | Optimal dispatch depends on branch density and block sizes | Phase 0B control flow metrics |
@@ -124,6 +157,41 @@ For each decision, produce:
 - The original rationale
 - New empirical evidence (for or against)
 - Reaffirmation or revision with justification
+
+### 3A.1: Binary-Primary vs Prime-Throughout Analysis
+
+The current design uses binary fields (F_2 / F_{2^k}) as the primary domain
+but requires a prime field for the RAM (Two Shuffles RAM) and permutation
+checks. Every RAM access requires a Mystique domain conversion (~30-45us at
+200Mbps-1Gbps). This is arguably the single largest cost driver in the system,
+and its resolution may cascade into the gate checking, RAM, and dispatch
+decisions. This analysis must complete before any other Phase 3A re-validation.
+
+Compare two architectural approaches end-to-end using the Phase 0D cost model:
+
+**Option A (current): Binary primary + prime RAM + Mystique conversions**
+- Advantages: binary is natural for bitwise Wasm ops, subfield VOLE is
+  efficient for boolean circuits
+- Cost: every load/store pays a Mystique conversion (~30-45us)
+- Use the Phase 0D cost model with benchmark profiles to compute total
+  conversion overhead as a fraction of total proving cost
+
+**Option B: Prime field throughout (F_{2^61-1})**
+- Advantages: no domain conversions at RAM boundary, all protocols
+  (QuickSilver, Batchman, Two Shuffles RAM, LogRobin++) are benchmarked
+  and proven over this field
+- Cost: Wasm wrapping arithmetic (i32.add, i32.mul) requires reduction
+  circuits and range proofs; bitwise ops (i32.and, i32.xor, i32.shl)
+  require bit decomposition
+- Estimate the cost of wrapping-arithmetic circuits and bitwise
+  decomposition, apply to benchmark profiles
+
+**Decision criteria:** Run both options through the Phase 0D cost model for
+all benchmarks. If Option B is within 2x of Option A on compute-heavy
+benchmarks AND eliminates conversion overhead on memory-heavy benchmarks, it
+is the better choice. If the cost profiles are mixed (some benchmarks favor
+A, some favor B), document the trade-off and recommend based on the target
+application mix.
 
 ### 3B: Resolve Open Questions
 
@@ -253,21 +321,30 @@ conversion, bulk memory.
 ## Workstream Dependencies
 
 ```
-Phase 0A (benchmarks) ──────────────────────────────┐
-Phase 0B (static analysis) ──┬──> Phase 3A (review) ┤
-Phase 0C (transforms) ──────┘         |              |
-                                      v              |
-                              Phase 3B (open Qs) ────┤
-                                      |              |
-                                      v              |
-                              Phase 3C (decisions) <─┘
-                                      |
-                                      v
-                              Phase 4A-4F (design)
+Phase 0A (benchmarks) ───────┐
+Phase 0B (analysis tooling) ─┤
+Phase 0C (transforms) ───────┤
+                              v
+                      Phase 0D (cost model) ──> Phase 3A.1 (binary vs prime)
+                                                        |
+                                                        v
+                                                Phase 3A (review remaining)
+                                                        |
+                                                        v
+                                                Phase 3B (open Qs)
+                                                        |
+                                                        v
+                                                Phase 3C (decisions)
+                                                        |
+                                                        v
+                                                Phase 4A-4F (design)
 ```
 
-Phase 0 and the early parts of Phase 3A can run in parallel. Phase 3B depends
-on Phase 0B output. Phase 3C depends on 3A and 3B. Phase 4 depends on 3C.
+Phase 0A-0C can run in parallel. Phase 0D depends on 0A (benchmark programs)
+and 0B (instruction profiles). Phase 3A.1 (binary vs prime analysis) depends on
+0D and must complete before the rest of Phase 3A, as its outcome may cascade
+into gate checking, RAM, and dispatch decisions. Phase 3B depends on 0B output.
+Phase 3C depends on 3A and 3B. Phase 4 depends on 3C.
 
 ---
 
