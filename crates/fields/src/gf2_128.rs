@@ -167,20 +167,34 @@ impl Field for Gf2_128 {
     }
 }
 
-cfg_select! {
-    all(target_arch = "x86_64", target_feature = "pclmulqdq") => {
-        mod x86;
-        use x86 as backend;
-    }
-    all(target_arch = "wasm32", target_feature = "simd128") => {
-        mod wasm;
-        use wasm as backend;
-    }
-    _ => {
-        mod soft;
-        use soft as backend;
-    }
-}
+#[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+mod x86;
+#[cfg(all(target_arch = "x86_64", target_feature = "pclmulqdq"))]
+use x86 as backend;
+
+#[cfg(all(
+    not(all(target_arch = "x86_64", target_feature = "pclmulqdq")),
+    target_arch = "wasm32",
+    target_feature = "simd128",
+))]
+mod wasm;
+#[cfg(all(
+    not(all(target_arch = "x86_64", target_feature = "pclmulqdq")),
+    target_arch = "wasm32",
+    target_feature = "simd128",
+))]
+use wasm as backend;
+
+#[cfg(not(any(
+    all(target_arch = "x86_64", target_feature = "pclmulqdq"),
+    all(target_arch = "wasm32", target_feature = "simd128"),
+)))]
+mod soft;
+#[cfg(not(any(
+    all(target_arch = "x86_64", target_feature = "pclmulqdq"),
+    all(target_arch = "wasm32", target_feature = "simd128"),
+)))]
+use soft as backend;
 
 #[inline(always)]
 fn gf128_mul(a: u128, b: u128) -> u128 {
