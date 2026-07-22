@@ -35,6 +35,10 @@ pub struct Sender<T: state::State = state::Initialized> {
     queue: VecDeque<Queued>,
     transfer_id: TransferId,
     delta: Block,
+    /// Per-instance domain separator mixed into the setup PRG seeds so that two
+    /// instances sharing the same `delta` and the same base OT produce
+    /// independent extension transcripts.
+    instance_id: Block,
     state: T,
 }
 
@@ -55,7 +59,10 @@ impl Sender<state::Initialized> {
     ///
     /// * `config` - Sender's configuration.
     /// * `delta` - Global COT correlation.
-    pub fn new(config: SenderConfig, delta: Block) -> Self {
+    /// * `instance_id` - Per-instance domain separator. Must match the paired
+    ///   receiver's `instance_id`. Distinct instances that reuse the same
+    ///   `delta` MUST use distinct ids.
+    pub fn new(config: SenderConfig, delta: Block, instance_id: Block) -> Self {
         Sender {
             config,
             // We need to extend SSP OTs for the consistency check.
@@ -65,6 +72,7 @@ impl Sender<state::Initialized> {
             transfer_id: TransferId::default(),
             queue: VecDeque::default(),
             delta,
+            instance_id,
             state: state::Initialized::default(),
         }
     }
@@ -75,14 +83,22 @@ impl Sender<state::Initialized> {
     ///
     /// * `seeds` - The rng seeds chosen during base OT
     pub fn setup(self, seeds: [Block; CSP]) -> Sender<state::Extension> {
+        let instance_id = self.instance_id;
         Sender {
             config: self.config,
             alloc: self.alloc,
             transfer_id: self.transfer_id,
             queue: self.queue,
             delta: self.delta,
+            instance_id,
             state: state::Extension {
-                rngs: seeds.into_iter().map(Prg::from_seed).collect(),
+                // Domain-separate the base-OT-derived PRG seeds by the instance
+                // id. Both parties transform the same chosen seed identically,
+                // so extension correctness is preserved.
+                rngs: seeds
+                    .into_iter()
+                    .map(|seed| Prg::from_seed(seed ^ instance_id))
+                    .collect(),
                 keys: Vec::default(),
                 extended: false,
                 unchecked_qs_trans: Vec::default(),

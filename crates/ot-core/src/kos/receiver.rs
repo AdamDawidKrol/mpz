@@ -29,6 +29,9 @@ pub struct Receiver<T: state::State = state::Initialized> {
     alloc: usize,
     transfer_id: TransferId,
     queue: VecDeque<Queued>,
+    /// Per-instance domain separator mixed into the setup PRG seeds. Must match
+    /// the paired sender's `instance_id`.
+    instance_id: Block,
     state: T,
 }
 
@@ -48,7 +51,9 @@ impl Receiver {
     /// # Arguments
     ///
     /// * `config` - The Receiver's configuration
-    pub fn new(config: ReceiverConfig) -> Self {
+    /// * `instance_id` - Per-instance domain separator. Must match the paired
+    ///   sender's `instance_id`.
+    pub fn new(config: ReceiverConfig, instance_id: Block) -> Self {
         Receiver {
             config,
             // We need to extend SSP OTs for the consistency check.
@@ -57,6 +62,7 @@ impl Receiver {
             alloc: SSP,
             transfer_id: TransferId::default(),
             queue: VecDeque::default(),
+            instance_id,
             state: state::Initialized {},
         }
     }
@@ -67,15 +73,19 @@ impl Receiver {
     ///
     /// * `seeds` - The receiver's rng seeds
     pub fn setup(self, seeds: [[Block; 2]; CSP]) -> Receiver<state::Extension> {
+        let instance_id = self.instance_id;
         Receiver {
             config: self.config,
             alloc: self.alloc,
             transfer_id: self.transfer_id,
             queue: self.queue,
+            instance_id,
             state: state::Extension {
+                // Domain-separate the base-OT-derived PRG seeds by the instance
+                // id, matching the sender's transform.
                 rngs: seeds
                     .into_iter()
-                    .map(|seeds| seeds.map(Prg::from_seed))
+                    .map(|seeds| seeds.map(|seed| Prg::from_seed(seed ^ instance_id)))
                     .collect(),
                 msgs: Vec::default(),
                 choices: Vec::default(),
