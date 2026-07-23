@@ -88,8 +88,12 @@ fn domain_separation_must_prevent_delta_recovery_under_seed_precompensation() {
     assert_ne!(id_a, id_b);
 
     let tweak = id_a ^ id_b;
-    let receiver_seeds_b: [[Block; 2]; CSP] =
-        std::array::from_fn(|i| [receiver_seeds_a[i][0] ^ tweak, receiver_seeds_a[i][1] ^ tweak]);
+    let receiver_seeds_b: [[Block; 2]; CSP] = std::array::from_fn(|i| {
+        [
+            receiver_seeds_a[i][0] ^ tweak,
+            receiver_seeds_a[i][1] ^ tweak,
+        ]
+    });
     let sender_seeds_b = sender_seeds_for(delta, &receiver_seeds_b);
 
     let a = run_instance(delta, id_a, sender_seeds_a, receiver_seeds_a);
@@ -101,7 +105,10 @@ fn domain_separation_must_prevent_delta_recovery_under_seed_precompensation() {
     let j = (0..COUNT)
         .find(|&j| a.receiver_choices[j] != b.receiver_choices[j])
         .unwrap();
-    println!("receiver-only msg XOR = {:?}", a.receiver_msgs[j] ^ b.receiver_msgs[j]);
+    println!(
+        "receiver-only msg XOR = {:?}",
+        a.receiver_msgs[j] ^ b.receiver_msgs[j]
+    );
     println!("true Δ      = {:?}", delta);
     println!("recovered Δ = {:?}", recovered);
 

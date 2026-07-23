@@ -8,7 +8,7 @@ use crate::{
 
 use itybity::{BitLength, FromBitIterator, IntoBitIterator, IntoBits};
 use mpz_common::future::{MaybeDone, Sender, new_output};
-use mpz_core::{Block, prg::Prg};
+use mpz_core::{Block, aes::FIXED_KEY_AES, prg::Prg};
 
 use rand::{Rng as _, SeedableRng};
 use rand_core::RngCore;
@@ -82,10 +82,15 @@ impl Receiver {
             instance_id,
             state: state::Extension {
                 // Domain-separate the base-OT-derived PRG seeds by the instance
-                // id, matching the sender's transform.
+                // id via a tweakable correlation-robust hash (tccr), matching the
+                // sender's transform. Must be non-invertible in `seed` — see the
+                // note in `sender.rs::setup` for the pre-compensation attack a
+                // linear XOR mix would enable.
                 rngs: seeds
                     .into_iter()
-                    .map(|seeds| seeds.map(|seed| Prg::from_seed(seed ^ instance_id)))
+                    .map(|seeds| {
+                        seeds.map(|seed| Prg::from_seed(FIXED_KEY_AES.tccr(instance_id, seed)))
+                    })
                     .collect(),
                 msgs: Vec::default(),
                 choices: Vec::default(),
