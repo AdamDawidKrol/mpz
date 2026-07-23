@@ -6,6 +6,8 @@
 //! The user of this protocol must carefully consider if the leakage introduced
 //! in this protocol is acceptable for their specific application.
 
+#[cfg(test)]
+mod attack_poc;
 mod config;
 mod error;
 pub mod msgs;
